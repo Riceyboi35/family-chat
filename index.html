@@ -49,6 +49,16 @@ h1{margin:0;font-size:28px;letter-spacing:-.02em}
 .who:active{transform:scale(.96)}
 .who .av{width:84px;height:84px;font-size:46px}
 .who b{font-size:20px}
+.pin-dots{display:flex;gap:18px}
+.pin-dots i{width:18px;height:18px;border-radius:50%;border:2px solid var(--muted);display:block;transition:background .1s}
+.pin-dots i.on{background:var(--accent);border-color:var(--accent)}
+.pin-dots.shake{animation:shake .35s}
+@keyframes shake{25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
+.pad{display:grid;grid-template-columns:repeat(3,78px);gap:14px}
+.pad button{width:78px;height:78px;border-radius:50%;background:var(--panel);box-shadow:var(--shadow);font-size:30px;font-weight:600}
+.pad button:active{background:var(--accent);color:#fff}
+.pad button.ghost{background:none;box-shadow:none;font-size:24px}
+.pad button:disabled{opacity:.4}
 .av{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:24px;flex:none;color:#fff;line-height:1}
 
 /* App layout */
@@ -156,21 +166,22 @@ textarea{flex:1;border:0;outline:0;background:none;color:var(--text);font:inheri
 </head>
 <body>
 
-<!-- Unlock -->
-<div id="unlock" class="screen hidden">
-  <img class="logo" src="icon-192.png" alt="">
-  <h1>Family Chat</h1>
-  <p class="sub">Just for our family. Type the family code to unlock this device.</p>
-  <input id="code" class="code-input" placeholder="Family code" autocomplete="off" autocapitalize="off" spellcheck="false">
-  <button id="unlockBtn" class="big-btn">Unlock</button>
-  <p id="unlockErr" class="err"></p>
-</div>
-
 <!-- Who are you -->
 <div id="whoami" class="screen hidden">
+  <img class="logo" src="icon-192.png" alt="">
   <h1>Who are you?</h1>
   <p class="sub">Tap your picture.</p>
   <div id="whoGrid" class="who-grid"></div>
+</div>
+
+<!-- PIN pad -->
+<div id="pinScreen" class="screen hidden">
+  <div id="pinAv"></div>
+  <h1 id="pinTitle">Enter your PIN</h1>
+  <div class="pin-dots" id="pinDots"><i></i><i></i><i></i><i></i></div>
+  <p id="pinErr" class="err"></p>
+  <div class="pad" id="pad"></div>
+  <button id="pinBack" class="sub" style="padding:8px">‹ Not you? Go back</button>
 </div>
 
 <!-- Main app -->
@@ -214,7 +225,6 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const SB_URL = 'https://xxdobfuehldoieciyvkg.supabase.co';
 const SB_KEY = 'sb_publishable_SZe-yJ5UR5cyGiQ4XkRsHw_KRIX1Kpx';
-const FAMILY_EMAIL = 'family@ricefamily.chat';
 const VAPID_PUBLIC = 'BIrG9CDT05-ECv5WMpw2xelony2RTn50_vhjc2fGgLmWNgtztQ0wqlEvH-Ik7jJZ8Efo9jfRmmWsfOAJsOMs9Fk';
 const REACTIONS = ['❤️','😂','👍','😮','😢','🎉'];
 const EMOJIS = '😀😁😂🤣😊😍🥰😘😎🤩🥳😜🤪😇🙂😉🤗🤔😴😢😭😡😱🤯👍👎👏🙌🙏💪👋✌️🤞❤️🧡💛💚💙💜🖤💖🔥⭐🌈☀️🌙⚡🎉🎂🎁🍕🍔🍟🍦🍩🍪🍎🍓⚽🏀🎮🎨📚🚗✈️🐶🐱🐰🦄🦖🐢🐬🦋🌸'.match(/\p{Extended_Pictographic}️?/gu);
@@ -240,44 +250,71 @@ function fmtDay(d){ d=new Date(d); const now=new Date(); const y=new Date(now); 
   return d.toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}); }
 const isBigEmoji = t => t && t.length <= 12 && /^(\p{Extended_Pictographic}|️|‍|\p{Emoji_Modifier}|\s)+$/u.test(t);
 const preview = m => !m ? 'Say hi 👋' : m.kind==='image' ? '📷 Photo' : m.kind==='voice' ? '🎤 Voice message' : m.body;
-function normCode(c){ return c.trim().split(/[\s\-_.]+/).filter(Boolean).map(w => /^[a-z]/i.test(w) ? w[0].toUpperCase()+w.slice(1).toLowerCase() : w).join('-'); }
 const safePath = c => c.replace(/:/g,'_');
 async function mediaUrl(path){
   if (S.urls[path]) return S.urls[path];
   const { data, error } = await sb.storage.from('media').createSignedUrl(path, 60*60*6);
   if (error) throw error; S.urls[path] = data.signedUrl; return data.signedUrl;
 }
-function show(id){ for (const s of ['unlock','whoami','app']) $(s).classList.toggle('hidden', s!==id); }
+function show(id){ for (const s of ['whoami','pinScreen','app']) $(s).classList.toggle('hidden', s!==id); }
 
-// ---------- boot ----------
+// ---------- boot & login ----------
 async function boot(){
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) return show('unlock');
-  await afterAuth();
-}
-$('unlockBtn').onclick = unlock;
-$('code').onkeydown = e => { if (e.key==='Enter') unlock(); };
-async function unlock(){
-  const code = normCode($('code').value); if (!code) return;
-  $('unlockBtn').disabled = true; $('unlockErr').textContent = '';
-  const { error } = await sb.auth.signInWithPassword({ email: FAMILY_EMAIL, password: code });
-  $('unlockBtn').disabled = false;
-  if (error) { $('unlockErr').textContent = /rate|many/i.test(error.message) ? 'Too many tries. Wait a few minutes.' : 'That code isn’t right. Try again.'; return; }
+  if (!session) return showWho();
   await afterAuth();
 }
 async function afterAuth(){
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return showWho();
   const { data, error } = await sb.from('members').select('*').order('sort');
-  if (error || !data?.length) { toast('Couldn’t load the family. Check your internet.'); return show('unlock'); }
+  if (error || !data?.length) { toast('Couldn’t load the family. Check your internet.'); return showWho(); }
   S.members = data; S.byId = Object.fromEntries(data.map(m=>[m.id,m]));
-  const me = ls.get('fc-me');
-  if (me && S.byId[me]) { S.me = me; return startApp(); }
-  showWho();
+  const mine = data.find(m => m.user_id === session.user.id);
+  if (!mine) { await sb.auth.signOut(); return showWho(); }
+  S.me = mine.id; startApp();
 }
-function showWho(){
-  $('whoGrid').innerHTML = S.members.map(m => `<button class="who" data-id="${m.id}">${avHtml(m)}<b>${esc(m.name)}</b></button>`).join('');
-  $('whoGrid').querySelectorAll('.who').forEach(b => b.onclick = () => { S.me = b.dataset.id; ls.set('fc-me', S.me); startApp(); });
+async function showWho(){
   show('whoami');
+  const { data, error } = await sb.rpc('member_faces');
+  if (error || !data?.length) { $('whoGrid').innerHTML = '<p class="sub">Can’t reach Family Chat. Check your internet.</p>'; setTimeout(showWho, 5000); return; }
+  $('whoGrid').innerHTML = data.map(m => `<button class="who" data-id="${m.id}">${avHtml(m)}<b>${esc(m.name)}</b></button>`).join('');
+  $('whoGrid').querySelectorAll('.who').forEach(b => b.onclick = () => showPin(data.find(m=>m.id===b.dataset.id)));
+}
+let pin='', pinWho=null, pinBusy=false;
+function showPin(m){
+  pinWho=m; pin=''; $('pinErr').textContent=''; drawDots();
+  $('pinAv').innerHTML = avHtml(m).replace('class="av"','class="av" style="width:84px;height:84px;font-size:46px;background:'+esc(m.color)+'"');
+  $('pinTitle').textContent = `Hi ${m.name}! Enter your PIN`;
+  show('pinScreen');
+}
+function drawDots(){ $('pinDots').querySelectorAll('i').forEach((d,i)=>d.classList.toggle('on', i<pin.length)); }
+$('pad').innerHTML = [1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k => k==='' ? '<span></span>' : `<button class="${k==='⌫'?'ghost':''}" data-k="${k}">${k}</button>`).join('');
+$('pad').querySelectorAll('button').forEach(b => b.onclick = () => pinKey(b.dataset.k));
+document.addEventListener('keydown', e => { if ($('pinScreen').classList.contains('hidden')) return;
+  if (/^[0-9]$/.test(e.key)) pinKey(e.key); if (e.key==='Backspace') pinKey('⌫'); });
+$('pinBack').onclick = showWho;
+async function pinKey(k){
+  if (pinBusy) return;
+  if (k==='⌫') { pin=pin.slice(0,-1); return drawDots(); }
+  if (pin.length>=4) return;
+  pin+=k; drawDots(); $('pinErr').textContent='';
+  if (pin.length<4) return;
+  pinBusy=true; $('pad').querySelectorAll('button').forEach(b=>b.disabled=true);
+  try {
+    const { data, error } = await sb.functions.invoke('pin', { body:{ action:'login', member_id:pinWho.id, pin } });
+    if (error) throw error;
+    if (data.result==='ok') { await sb.auth.setSession({ access_token:data.access_token, refresh_token:data.refresh_token }); await afterAuth(); }
+    else { $('pinErr').textContent = data.result==='locked' ? 'Too many wrong tries. Wait 15 minutes, or ask Dad.' : 'Wrong PIN. Try again.';
+      $('pinDots').classList.add('shake'); navigator.vibrate?.(120); setTimeout(()=>$('pinDots').classList.remove('shake'),400); }
+  } catch { $('pinErr').textContent='Couldn’t check your PIN. Check your internet.'; }
+  pin=''; drawDots(); pinBusy=false; $('pad').querySelectorAll('button').forEach(b=>b.disabled=false);
+}
+async function signOutDevice(){
+  try { const reg=await navigator.serviceWorker?.getRegistration(); const sub=await reg?.pushManager.getSubscription();
+    if (sub) await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); } catch {}
+  await sb.auth.signOut(); location.href = location.pathname;
 }
 
 // ---------- data ----------
@@ -617,20 +654,27 @@ $('meBtn').onclick = () => {
     <button class="sheet-btn" data-a="notif">🔔 Turn on notifications</button>
     <button class="sheet-btn" data-a="avatar">😀 Change my picture</button>
     <button class="sheet-btn" data-a="name">✏️ Change my name</button>
-    <button class="sheet-btn" data-a="switch">🔁 I’m not ${esc(me.name)}</button>
+    <button class="sheet-btn" data-a="pin">🔢 Change my PIN</button>
     <button class="sheet-btn" data-a="install">📲 Add to Home Screen</button>
-    <button class="sheet-btn danger" data-a="lock">🔒 Lock this device</button>
+    <button class="sheet-btn danger" data-a="lock">🔁 Log out / switch person</button>
     <button class="sheet-btn" data-a="x">Close</button>`);
   o.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
     o.remove(); const a=b.dataset.a;
     if (a==='notif') enableNotifs();
     if (a==='avatar') pickAvatar();
     if (a==='name') { const n=prompt('Your name', me.name); if (n && n.trim()) { await sb.from('members').update({ name:n.trim().slice(0,30) }).eq('id',S.me); afterAuth(); } }
-    if (a==='switch') { ls.set('fc-me',''); S.chat=null; $('app').classList.remove('in-chat'); showWho(); }
+    if (a==='pin') changePin();
     if (a==='install') installHelp();
-    if (a==='lock') { await sb.auth.signOut(); ls.set('fc-me',''); location.href=location.pathname; }
+    if (a==='lock') signOutDevice();
   });
 };
+async function changePin(){
+  const p = prompt('Type a new 4-number PIN'); if (p===null) return;
+  if (!/^[0-9]{4}$/.test(p.trim())) return toast('A PIN is exactly 4 numbers.');
+  if (prompt('Type it again to check')?.trim() !== p.trim()) return toast('Those didn’t match. PIN not changed.');
+  const { data, error } = await sb.functions.invoke('pin', { body:{ action:'change', pin:p.trim() } });
+  toast(!error && data?.result==='ok' ? 'PIN changed ✅' : 'Couldn’t change your PIN. Try again.');
+}
 function pickAvatar(){
   const o=sheet(`<h3>Pick your picture</h3><div class="emoji-grid">${EMOJIS.map(e=>`<button>${e}</button>`).join('')}</div>`);
   o.querySelectorAll('button').forEach(b => b.onclick = async () => { o.remove(); await sb.from('members').update({ avatar:b.textContent }).eq('id',S.me); afterAuth(); });
